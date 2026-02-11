@@ -26,6 +26,7 @@ from urllib.parse import urljoin
 
 import json_repair
 import litellm
+import httpx
 import openai
 from openai import AsyncOpenAI, OpenAI
 from strenum import StrEnum
@@ -1253,6 +1254,93 @@ class LiteLLMBase(ABC):
             del gen_conf["max_tokens"]
         return gen_conf
 
+    def _anthropic_http_headers(self):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "content-type": "application/json",
+            "anthropic-version": os.environ.get("RAGFLOW_ANTHROPIC_VERSION", "2023-06-01"),
+        }
+        if "RAGFLOW_ANTHROPIC_BETA" in os.environ:
+            headers["anthropic-beta"] = os.environ.get("RAGFLOW_ANTHROPIC_BETA", "")
+        return headers
+
+    def _anthropic_http_payload(self, history, gen_conf):
+        system_prompt = ""
+        messages = []
+        for msg in history:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "system":
+                system_prompt = (system_prompt + "\n\n" + content).strip() if system_prompt else content
+            else:
+                messages.append({"role": role, "content": content})
+
+        model = self.model_name.split("/", 1)[-1]
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": gen_conf.get("max_tokens", 1024),
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        if "temperature" in gen_conf:
+            payload["temperature"] = gen_conf["temperature"]
+        if "top_p" in gen_conf:
+            payload["top_p"] = gen_conf["top_p"]
+        if "stop" in gen_conf and gen_conf["stop"]:
+            payload["stop_sequences"] = gen_conf["stop"]
+        return payload
+
+    async def _anthropic_http_chat(self, history, gen_conf):
+        url = f"{self.base_url.rstrip('/')}/v1/messages"
+        headers = self._anthropic_http_headers()
+        payload = self._anthropic_http_payload(history, gen_conf)
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code >= 400:
+                return f"{ERROR_PREFIX}: AUTH_ERROR - {resp.status_code} {resp.text}", 0
+            data = resp.json()
+            content = data.get("content", [])
+            text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
+            return "".join(text_parts).strip(), data.get("usage", {}).get("output_tokens", 0)
+        except Exception as exc:
+            return f"{ERROR_PREFIX}: AUTH_ERROR - {exc}", 0
+
+    async def _anthropic_http_chat_stream(self, history, gen_conf):
+        url = f"{self.base_url.rstrip('/')}/v1/messages"
+        headers = self._anthropic_http_headers()
+        payload = self._anthropic_http_payload(history, gen_conf)
+        payload["stream"] = True
+        total_tokens = 0
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                    if resp.status_code >= 400:
+                        yield f"{ERROR_PREFIX}: AUTH_ERROR - {resp.status_code} {await resp.aread()}"
+                        yield total_tokens
+                        return
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:") :].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except Exception:
+                            continue
+                        if chunk.get("type") == "content_block_delta":
+                            delta = chunk.get("delta", {})
+                            text = delta.get("text", "")
+                            if text:
+                                total_tokens += num_tokens_from_string(text)
+                                yield text
+                    yield total_tokens
+        except Exception as exc:
+            yield f"{ERROR_PREFIX}: AUTH_ERROR - {exc}"
+            yield total_tokens
+
     async def async_chat(self, system, history, gen_conf, **kwargs):
         hist = list(history) if history else []
         if system:
@@ -1262,6 +1350,9 @@ class LiteLLMBase(ABC):
         logging.info("[HISTORY]" + json.dumps(hist, ensure_ascii=False, indent=2))
         if self.model_name.lower().find("qwen3") >= 0:
             kwargs["extra_body"] = {"enable_thinking": False}
+
+        if self.provider == SupportedLiteLLMProvider.Anthropic and os.environ.get("RAGFLOW_ANTHROPIC_AUTH", "").strip().lower() == "authorization":
+            return await self._anthropic_http_chat(hist, gen_conf)
 
         completion_args = self._construct_completion_args(history=hist, stream=False, tools=False, **gen_conf)
 
@@ -1294,6 +1385,11 @@ class LiteLLMBase(ABC):
         gen_conf = self._clean_conf(gen_conf)
         reasoning_start = False
         total_tokens = 0
+
+        if self.provider == SupportedLiteLLMProvider.Anthropic and os.environ.get("RAGFLOW_ANTHROPIC_AUTH", "").strip().lower() == "authorization":
+            async for chunk in self._anthropic_http_chat_stream(history, gen_conf):
+                yield chunk
+            return
 
         completion_args = self._construct_completion_args(history=history, stream=True, tools=False, **gen_conf)
         stop = kwargs.get("stop")
@@ -1688,10 +1784,34 @@ class LiteLLMBase(ABC):
                 }
             )
 
+        # Extra headers from environment (JSON object) for custom gateways.
+        extra_headers = deepcopy(completion_args.get("extra_headers") or {})
+        env_headers = os.environ.get("RAGFLOW_LITELLM_EXTRA_HEADERS_JSON", "").strip()
+        if env_headers:
+            try:
+                parsed_headers = json.loads(env_headers)
+                if isinstance(parsed_headers, dict):
+                    extra_headers.update(parsed_headers)
+                else:
+                    logging.warning("RAGFLOW_LITELLM_EXTRA_HEADERS_JSON is not a JSON object; ignored")
+            except Exception as exc:
+                logging.warning(f"Invalid RAGFLOW_LITELLM_EXTRA_HEADERS_JSON; ignored: {exc}")
+
+        # Anthropic gateway compatibility: optionally use Authorization header
+        # instead of x-api-key, and allow overriding anthropic-beta.
+        if self.provider == SupportedLiteLLMProvider.Anthropic:
+            auth_mode = os.environ.get("RAGFLOW_ANTHROPIC_AUTH", "").strip().lower()
+            if auth_mode == "authorization":
+                if self.api_key and "Authorization" not in extra_headers:
+                    extra_headers["Authorization"] = f"Bearer {self.api_key}"
+                # Avoid sending x-api-key when Authorization is used.
+                completion_args.pop("api_key", None)
+            if "RAGFLOW_ANTHROPIC_BETA" in os.environ:
+                extra_headers["anthropic-beta"] = os.environ.get("RAGFLOW_ANTHROPIC_BETA", "")
+
         # Ollama deployments commonly sit behind a reverse proxy that enforces
         # Bearer auth. Ensure the Authorization header is set when an API key
         # is provided, while respecting any user-supplied headers. #11350
-        extra_headers = deepcopy(completion_args.get("extra_headers") or {})
         if self.provider == SupportedLiteLLMProvider.Ollama and self.api_key and "Authorization" not in extra_headers:
             extra_headers["Authorization"] = f"Bearer {self.api_key}"
         if extra_headers:
