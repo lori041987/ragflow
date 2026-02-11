@@ -1254,6 +1254,7 @@ class LiteLLMBase(ABC):
             del gen_conf["max_tokens"]
         return gen_conf
 
+    # [WNC] Direct Anthropic HTTP client for gateway compatibility (Authorization Bearer mode)
     def _anthropic_http_headers(self):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -1351,7 +1352,10 @@ class LiteLLMBase(ABC):
         if self.model_name.lower().find("qwen3") >= 0:
             kwargs["extra_body"] = {"enable_thinking": False}
 
-        if self.provider == SupportedLiteLLMProvider.Anthropic and os.environ.get("RAGFLOW_ANTHROPIC_AUTH", "").strip().lower() == "authorization":
+        # [WNC] Bypass LiteLLM for Anthropic when using Authorization Bearer mode
+        if self.provider == SupportedLiteLLMProvider.Anthropic and (
+            os.environ.get("RAGFLOW_ANTHROPIC_CUSTOM_GATEWAY", "").strip().lower() in {"1", "true", "yes"}
+        ):
             return await self._anthropic_http_chat(hist, gen_conf)
 
         completion_args = self._construct_completion_args(history=hist, stream=False, tools=False, **gen_conf)
@@ -1386,7 +1390,10 @@ class LiteLLMBase(ABC):
         reasoning_start = False
         total_tokens = 0
 
-        if self.provider == SupportedLiteLLMProvider.Anthropic and os.environ.get("RAGFLOW_ANTHROPIC_AUTH", "").strip().lower() == "authorization":
+        # [WNC] Bypass LiteLLM for Anthropic when using Authorization Bearer mode (streaming)
+        if self.provider == SupportedLiteLLMProvider.Anthropic and (
+            os.environ.get("RAGFLOW_ANTHROPIC_CUSTOM_GATEWAY", "").strip().lower() in {"1", "true", "yes"}
+        ):
             async for chunk in self._anthropic_http_chat_stream(history, gen_conf):
                 yield chunk
             return
@@ -1784,7 +1791,7 @@ class LiteLLMBase(ABC):
                 }
             )
 
-        # Extra headers from environment (JSON object) for custom gateways.
+        # [WNC] Extra headers from environment (JSON object) for custom gateways.
         extra_headers = deepcopy(completion_args.get("extra_headers") or {})
         env_headers = os.environ.get("RAGFLOW_LITELLM_EXTRA_HEADERS_JSON", "").strip()
         if env_headers:
@@ -1796,18 +1803,6 @@ class LiteLLMBase(ABC):
                     logging.warning("RAGFLOW_LITELLM_EXTRA_HEADERS_JSON is not a JSON object; ignored")
             except Exception as exc:
                 logging.warning(f"Invalid RAGFLOW_LITELLM_EXTRA_HEADERS_JSON; ignored: {exc}")
-
-        # Anthropic gateway compatibility: optionally use Authorization header
-        # instead of x-api-key, and allow overriding anthropic-beta.
-        if self.provider == SupportedLiteLLMProvider.Anthropic:
-            auth_mode = os.environ.get("RAGFLOW_ANTHROPIC_AUTH", "").strip().lower()
-            if auth_mode == "authorization":
-                if self.api_key and "Authorization" not in extra_headers:
-                    extra_headers["Authorization"] = f"Bearer {self.api_key}"
-                # Avoid sending x-api-key when Authorization is used.
-                completion_args.pop("api_key", None)
-            if "RAGFLOW_ANTHROPIC_BETA" in os.environ:
-                extra_headers["anthropic-beta"] = os.environ.get("RAGFLOW_ANTHROPIC_BETA", "")
 
         # Ollama deployments commonly sit behind a reverse proxy that enforces
         # Bearer auth. Ensure the Authorization header is set when an API key

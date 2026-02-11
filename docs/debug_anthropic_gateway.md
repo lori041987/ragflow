@@ -131,12 +131,12 @@ curl -v http://t1cim-wncchat.wneweb.com.tw/anthropic/v1/messages \
 
 **Fix #2:**
 - Add a direct Anthropic HTTP path (bypassing LiteLLM) when:
-  `RAGFLOW_ANTHROPIC_AUTH=authorization`
+  `RAGFLOW_ANTHROPIC_CUSTOM_GATEWAY=1`
 - Use `Authorization: Bearer` and allow override of `anthropic-version` / `anthropic-beta`.
 
 **Runtime env used:**
 ```
-RAGFLOW_ANTHROPIC_AUTH=authorization
+RAGFLOW_ANTHROPIC_CUSTOM_GATEWAY=1
 RAGFLOW_ANTHROPIC_VERSION=2023-06-01
 RAGFLOW_ANTHROPIC_BETA=
 ```
@@ -164,7 +164,7 @@ RAGFLOW_ANTHROPIC_BETA=
 ## Files Changed
 - `docker/docker-compose-base.yml`: moved ragflow network to `10.201.0.0/16`
 - `docker/docker-compose.yml`: bind-mount patched `rag/llm/chat_model.py`
-- `docker/.env`: add Anthropic Authorization + header overrides
+- `docker/.env`: add Anthropic custom gateway toggle + header overrides
 - `rag/llm/chat_model.py`: direct Anthropic HTTP path + env-controlled headers
 
 ---
@@ -172,4 +172,4 @@ RAGFLOW_ANTHROPIC_BETA=
 ## Final Notes
 - The routing fix prevents Docker from hijacking `172.17.x.x` traffic.
 - The auth fix is required because the company gateway rejects `x-api-key` and injects a bad `anthropic-beta` header.
-- The direct Anthropic path is only enabled when `RAGFLOW_ANTHROPIC_AUTH=authorization` is set; other providers remain on LiteLLM.
+- The direct Anthropic path is only enabled when `RAGFLOW_ANTHROPIC_CUSTOM_GATEWAY=1` is set; other providers remain on LiteLLM.
