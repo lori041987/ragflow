@@ -31,11 +31,13 @@ type FieldType = {
   group_id?: string;
 };
 
+// [WNC] Models requiring base URL configuration (added BAAI)
 const modelsWithBaseUrl = [
   LLMFactory.OpenAI,
   LLMFactory.AzureOpenAI,
   LLMFactory.TongYiQianWen,
   LLMFactory.MiniMax,
+  LLMFactory.BAAI, // [WNC] BAAI requires base URL
 ];
 
 const ApiKeyModal = ({

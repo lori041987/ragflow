@@ -65,8 +65,14 @@ LENGTH_NOTIFICATION_EN = "...\nThe answer is truncated by your chosen LLM due to
 class Base(ABC):
     def __init__(self, key, model_name, base_url, **kwargs):
         timeout = int(os.environ.get("LLM_TIMEOUT_SECONDS", 600))
-        self.client = OpenAI(api_key=key, base_url=base_url, timeout=timeout)
-        self.async_client = AsyncOpenAI(api_key=key, base_url=base_url, timeout=timeout)
+        # [WNC] Custom HTTP client for SSL verification control
+        http_client, async_http_client = self._openai_http_clients()
+        if http_client and async_http_client:
+            self.client = OpenAI(api_key=key, base_url=base_url, timeout=timeout, http_client=http_client)
+            self.async_client = AsyncOpenAI(api_key=key, base_url=base_url, timeout=timeout, http_client=async_http_client)
+        else:
+            self.client = OpenAI(api_key=key, base_url=base_url, timeout=timeout)
+            self.async_client = AsyncOpenAI(api_key=key, base_url=base_url, timeout=timeout)
         self.model_name = model_name
         # Configure retry parameters
         self.max_retries = kwargs.get("max_retries", int(os.environ.get("LLM_MAX_RETRIES", 5)))
@@ -135,6 +141,15 @@ class Base(ABC):
             gen_conf = {}
 
         return gen_conf
+
+    # [WNC] Custom HTTP clients for OpenAI-compatible gateways with SSL control
+    def _openai_http_clients(self):
+        if os.environ.get("RAGFLOW_OPENAI_CUSTOM_GATEWAY", "").strip().lower() not in {"1", "true", "yes"}:
+            return None, None
+        verify = os.environ.get("RAGFLOW_OPENAI_SSL_VERIFY", "").strip().lower()
+        if verify in {"0", "false", "no"}:
+            return httpx.Client(verify=False), httpx.AsyncClient(verify=False)
+        return None, None
 
     async def _async_chat_streamly(self, history, gen_conf, **kwargs):
         logging.info("[HISTORY STREAMLY]" + json.dumps(history, ensure_ascii=False, indent=4))

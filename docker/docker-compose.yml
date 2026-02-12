@@ -42,7 +42,12 @@ services:
       - ../history_data_agent:/ragflow/history_data_agent
       - ./service_conf.yaml.template:/ragflow/conf/service_conf.yaml.template
       - ./entrypoint.sh:/ragflow/entrypoint.sh
+      ## [WNC]
+      - ../conf/llm_factories.json:/ragflow/conf/llm_factories.json
       - ../rag/llm/chat_model.py:/ragflow/rag/llm/chat_model.py
+      - ../rag/llm/rerank_model.py:/ragflow/rag/llm/rerank_model.py
+      - ../api/apps/llm_app.py:/ragflow/api/apps/llm_app.py
+      - ../web/dist:/ragflow/web/dist
     env_file: .env
     networks:
       - ragflow

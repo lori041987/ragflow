@@ -14,6 +14,7 @@
 #  limitations under the License.
 #
 import json
+import os
 from abc import ABC
 from urllib.parse import urljoin
 
@@ -131,6 +132,42 @@ class LocalAIRerank(Base):
         else:
             rank = np.zeros_like(rank)
 
+        return rank, token_count
+
+
+# [WNC] BAAI reranker implementation with SSL verification control
+class BAAIRerank(Base):
+    _FACTORY_NAME = "BAAI"
+
+    def __init__(self, key, model_name, base_url):
+        if not base_url:
+            raise ValueError("Rerank url cannot be None")
+        if "/rerank" not in base_url:
+            base_url = urljoin(base_url, "/v1/rerank")
+        self.base_url = base_url
+        self.headers = {
+            "Content-Type": "application/json",
+            "accept": "application/json",
+            "Authorization": f"Bearer {key}",
+        }
+        self.model_name = model_name
+
+    def similarity(self, query: str, texts: list):
+        if len(texts) == 0:
+            return np.array([]), 0
+        texts = [truncate(t, 4096) for t in texts]
+        token_count = num_tokens_from_string(query) + sum([num_tokens_from_string(t) for t in texts])
+        data = {"model": self.model_name, "query": query, "texts": texts}
+        # [WNC] SSL verification control for BAAI rerank endpoint
+        verify = os.environ.get("RAGFLOW_RERANK_SSL_VERIFY", "").strip().lower()
+        verify_flag = not (verify in {"0", "false", "no"})
+        res = httpx.post(self.base_url, headers=self.headers, json=data, verify=verify_flag).json()
+        rank = np.zeros(len(texts), dtype=float)
+        try:
+            for d in res.get("data", []):
+                rank[d["index"]] = d.get("score", d.get("relevance_score", 0.0))
+        except Exception as _e:
+            log_exception(_e, res)
         return rank, token_count
 
 

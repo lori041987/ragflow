@@ -33,7 +33,8 @@ from rag.llm import EmbeddingModel, ChatModel, RerankModel, CvModel, TTSModel, O
 def factories():
     try:
         fac = get_allowed_llm_factories()
-        fac = [f.to_dict() for f in fac if f.name not in ["Youdao", "FastEmbed", "BAAI", "Builtin"]]
+        # [WNC] Enable BAAI provider in UI (removed from exclusion list)
+        fac = [f.to_dict() for f in fac if f.name not in ["Youdao", "FastEmbed", "Builtin"]]
         llms = LLMService.get_all()
         mdl_types = {}
         for m in llms:
