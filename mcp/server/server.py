@@ -639,8 +639,15 @@ def main(base_url, host, port, mode, api_key, transport_sse_enabled, transport_s
 
     import uvicorn
     from dotenv import load_dotenv
+    ## [WNC] Import RAGFlow's logging utility for consistent log formatting and LOG_LEVELS support
+    from common.log_utils import init_root_logger
 
     load_dotenv()
+
+    ## [WNC] Initialize logging using RAGFlow's logging system with timestamps and LOG_LEVELS env var support
+    # This respects the LOG_LEVELS environment variable (e.g., LOG_LEVELS=root=INFO)
+    # Logs will be written to /ragflow/logs/mcp_server.log with timestamps
+    init_root_logger("mcp_server")
 
     def parse_bool_flag(key: str, default: bool) -> bool:
         val = os.environ.get(key, str(default))
@@ -702,10 +709,16 @@ __  __  ____ ____       ____  _____ ______     _______ ____
         if JSON_RESPONSE:
             print("Warning: --json-response ignored because streamable transport is disabled.", flush=True)
 
+    ## [WNC] Configure uvicorn logging to use timestamps matching RAGFlow's format
+    log_config = uvicorn.config.LOGGING_CONFIG
+    log_config["formatters"]["access"]["fmt"] = "%(asctime)s %(levelname)s %(message)s"
+    log_config["formatters"]["default"]["fmt"] = "%(asctime)s %(levelname)s %(message)s"
+
     uvicorn.run(
         create_starlette_app(),
         host=HOST,
         port=int(PORT),
+        log_config=log_config,
     )
 
 
