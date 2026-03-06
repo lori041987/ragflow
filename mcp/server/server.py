@@ -18,6 +18,7 @@ import json
 import logging
 import random
 import time
+import uuid  # WNC: Added for request correlation IDs
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -277,6 +278,8 @@ class RAGFlowConnector:
         except Exception as e:
             # Gracefully handle metadata cache failures
             logging.error(f"Problem building the document metadata cache: {str(e)}")
+            # WNC: Add WNC-MCP tagged log for easier filtering
+            logging.warning(f"WNC-MCP [SERVER] metadata_cache operation=metadata_cache status=error error_type={type(e).__name__}")
             pass
 
         return document_cache, dataset_cache
@@ -362,7 +365,19 @@ def with_api_key(required=True):
 @app.list_tools()
 @with_api_key(required=True)
 async def list_tools(*, connector) -> list[types.Tool]:
+    # WNC: Generate correlation ID and start timing for request tracing
+    request_id = str(uuid.uuid4())
+    start_time = time.time()
+
+    # WNC: Log incoming list_tools request
+    logging.info(f"WNC-MCP [SERVER] list_tools request_id={request_id} mode={MODE} operation=list_tools")
+
     dataset_description = connector.list_datasets()
+
+    # WNC: Log completion with metrics before returning
+    latency_ms = (time.time() - start_time) * 1000
+    dataset_count = len(dataset_description.split('\n')) if dataset_description else 0
+    logging.debug(f"WNC-MCP [SERVER] list_tools request_id={request_id} tool_count=1 dataset_count={dataset_count} latency_ms={latency_ms:.2f}")
 
     return [
         types.Tool(
@@ -444,10 +459,19 @@ async def list_tools(*, connector) -> list[types.Tool]:
 @app.call_tool()
 @with_api_key(required=True)
 async def call_tool(name: str, arguments: dict, *, connector) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    # WNC: Generate correlation ID and start timing for request tracing
+    request_id = str(uuid.uuid4())
+    start_time = time.time()
+
     if name == "ragflow_retrieval":
         document_ids = arguments.get("document_ids", [])
         dataset_ids = arguments.get("dataset_ids", [])
         question = arguments.get("question", "")
+
+        # WNC: Log incoming call_tool request with payload summary
+        question_preview = question[:100] + "..." if len(question) > 100 else question
+        logging.info(f"WNC-MCP [SERVER] call_tool request_id={request_id} mode={MODE} operation=call_tool tool_name={name} dataset_count={len(dataset_ids)} doc_count={len(document_ids)} question_len={len(question)}")
+
         page = arguments.get("page", 1)
         page_size = arguments.get("page_size", 10)
         similarity_threshold = arguments.get("similarity_threshold", 0.2)
@@ -473,7 +497,10 @@ async def call_tool(name: str, arguments: dict, *, connector) -> list[types.Text
                         except (json.JSONDecodeError, KeyError):
                             # Skip malformed lines
                             continue
-        
+
+        # WNC: Log retrieval API call details before executing
+        logging.debug(f"WNC-MCP [SERVER] call_tool request_id={request_id} operation=retrieval_api_call dataset_ids_count={len(dataset_ids)} question_preview='{question_preview}'")
+
         return connector.retrieval(
             dataset_ids=dataset_ids,
             document_ids=document_ids,
@@ -487,6 +514,9 @@ async def call_tool(name: str, arguments: dict, *, connector) -> list[types.Text
             rerank_id=rerank_id,
             force_refresh=force_refresh,
         )
+
+    # WNC: Log invalid tool name
+    logging.warning(f"WNC-MCP [SERVER] call_tool request_id={request_id} operation=call_tool status=invalid_tool tool_name={name}")
     raise ValueError(f"Tool not found: {name}")
 
 

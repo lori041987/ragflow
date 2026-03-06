@@ -48,6 +48,10 @@ services:
       - ../rag/llm/rerank_model.py:/ragflow/rag/llm/rerank_model.py
       - ../api/apps/llm_app.py:/ragflow/api/apps/llm_app.py
       - ../web/dist:/ragflow/web/dist
+      ## [WNC] MCP logging files
+      - ../mcp/server/server.py:/ragflow/mcp/server/server.py
+      - ../common/mcp_tool_call_conn.py:/ragflow/common/mcp_tool_call_conn.py
+      - ../api/apps/mcp_server_app.py:/ragflow/api/apps/mcp_server_app.py
     env_file: .env
     networks:
       - ragflow

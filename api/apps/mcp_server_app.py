@@ -14,6 +14,7 @@
 #  limitations under the License.
 #
 import asyncio
+import logging  # WNC: Added for WNC-MCP logging
 
 from quart import Response, request
 from api.apps import current_user, login_required
@@ -107,9 +108,15 @@ async def create() -> Response:
         if not e:
             return get_data_error_result(message="Tenant not found.")
 
+        # WNC: Log tool discovery start
+        url_sanitized = url.split('@')[-1] if '@' in url else url
+        logging.info(f"WNC-MCP [CLIENT] create_server_tools_fetch server_name={server_name} url={url_sanitized} user_id={current_user.id} operation=create_server_tools_fetch")
+
         mcp_server = MCPServer(id=server_name, name=server_name, url=url, server_type=server_type, variables=variables, headers=headers)
         server_tools, err_message = await asyncio.to_thread(get_mcp_tools, [mcp_server], timeout)
         if err_message:
+            # WNC: Log tool discovery failure
+            logging.error(f"WNC-MCP [CLIENT] create_server_tools_fetch server_name={server_name} status=error error='{err_message[:200]}' operation=create_server_tools_fetch")
             return get_data_error_result(err_message)
 
         tools = server_tools[server_name]
@@ -119,6 +126,16 @@ async def create() -> Response:
 
         if not MCPServerService.insert(**req):
             return get_data_error_result("Failed to create MCP server.")
+
+        # WNC: Log server created successfully with tool details
+        tool_names = list(tools.keys())
+        tool_details = []
+        for name, tool in tools.items():
+            # WNC: Sanitize description - replace newlines/tabs with spaces, then truncate to 100 chars
+            desc = tool.get("description", "").replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')[:100]
+            tool_details.append(f"{name}:{desc}")
+        tool_details_str = " | ".join(tool_details)
+        logging.info(f"WNC-MCP [CLIENT] create_server server_id={req['id']} server_name={server_name} tool_count={len(tools)} tool_names={tool_names} tool_details='{tool_details_str}' user_id={current_user.id} operation=create_server")
 
         return get_json_result(data=req)
     except Exception as e:
@@ -159,9 +176,15 @@ async def update() -> Response:
         req.pop("mcp_id", None)
         req["id"] = mcp_id
 
+        # WNC: Log tool re-discovery start
+        url_sanitized = url.split('@')[-1] if '@' in url else url
+        logging.info(f"WNC-MCP [CLIENT] update_server_tools_fetch server_id={mcp_id} url={url_sanitized} user_id={current_user.id} operation=update_server_tools_fetch")
+
         mcp_server = MCPServer(id=server_name, name=server_name, url=url, server_type=server_type, variables=variables, headers=headers)
         server_tools, err_message = await asyncio.to_thread(get_mcp_tools, [mcp_server], timeout)
         if err_message:
+            # WNC: Log tool re-discovery failure
+            logging.error(f"WNC-MCP [CLIENT] update_server_tools_fetch server_id={mcp_id} status=error error='{err_message[:200]}' operation=update_server_tools_fetch")
             return get_data_error_result(err_message)
 
         tools = server_tools[server_name]
@@ -320,12 +343,17 @@ async def list_tools() -> Response:
 
                 cached_tools = mcp_server.variables.get("tools", {})
 
+                # WNC: Log list_tools API call
+                logging.info(f"WNC-MCP [CLIENT] list_tools_api server_id={mcp_id} timeout={timeout} user_id={current_user.id} operation=list_tools_api")
+
                 tool_call_session = MCPToolCallSession(mcp_server, mcp_server.variables)
                 tool_call_sessions.append(tool_call_session)
 
                 try:
                     tools = await asyncio.to_thread(tool_call_session.get_tools, timeout)
                 except Exception as e:
+                    # WNC: Log list_tools API error
+                    logging.error(f"WNC-MCP [CLIENT] list_tools_api server_id={mcp_id} status=error error_type={type(e).__name__} operation=list_tools_api")
                     return get_data_error_result(message=f"MCP list tools error: {e}")
 
                 results[server_key] = []
@@ -341,6 +369,8 @@ async def list_tools() -> Response:
         return server_error_response(e)
     finally:
         # PERF: blocking call to close sessions — consider moving to background thread or task queue
+        # WNC: Log session cleanup
+        logging.debug(f"WNC-MCP [CLIENT] session_cleanup session_count={len(tool_call_sessions)} operation=session_cleanup")
         await asyncio.to_thread(close_multiple_mcp_toolcall_sessions, tool_call_sessions)
 
 
@@ -366,11 +396,16 @@ async def test_tool() -> Response:
         if not e or mcp_server.tenant_id != current_user.id:
             return get_data_error_result(message=f"Cannot find MCP server {mcp_id} for user {current_user.id}")
 
+        # WNC: Log test_tool call
+        logging.info(f"WNC-MCP [CLIENT] test_tool server_id={mcp_id} tool_name={tool_name} user_id={current_user.id} operation=test_tool")
+
         tool_call_session = MCPToolCallSession(mcp_server, mcp_server.variables)
         tool_call_sessions.append(tool_call_session)
         result = await asyncio.to_thread(tool_call_session.tool_call, tool_name, arguments, timeout)
 
         # PERF: blocking call to close sessions — consider moving to background thread or task queue
+        # WNC: Log session cleanup
+        logging.debug(f"WNC-MCP [CLIENT] session_cleanup session_count={len(tool_call_sessions)} operation=session_cleanup")
         await asyncio.to_thread(close_multiple_mcp_toolcall_sessions, tool_call_sessions)
         return get_json_result(data=result)
     except Exception as e:
@@ -418,6 +453,10 @@ async def test_mcp() -> Response:
     headers = safe_json_parse(req.get("headers", {}))
     variables = safe_json_parse(req.get("variables", {}))
 
+    # WNC: Log test_mcp start
+    url_sanitized = url.split('@')[-1] if '@' in url else url
+    logging.info(f"WNC-MCP [CLIENT] test_mcp url={url_sanitized} server_type={server_type} timeout={timeout} operation=test_mcp")
+
     mcp_server = MCPServer(id=f"{server_type}: {url}", server_type=server_type, url=url, headers=headers, variables=variables)
 
     result = []
@@ -427,6 +466,8 @@ async def test_mcp() -> Response:
         try:
             tools = await asyncio.to_thread(tool_call_session.get_tools, timeout)
         except Exception as e:
+            # WNC: Log test_mcp error
+            logging.error(f"WNC-MCP [CLIENT] test_mcp url={url_sanitized} status=error error_type={type(e).__name__} operation=test_mcp")
             return get_data_error_result(message=f"Test MCP error: {e}")
         finally:
             # PERF: blocking call to close sessions — consider moving to background thread or task queue
